@@ -68,9 +68,8 @@ int main(int argc, char* argv[]) {
     key_t key = ftok("master", 137);
     int shmid = shmget(key, numStrings * 128, 0666 | IPC_CREAT);
 
+    char(*addr)[128] = (char(*)[128]) shmat(shmid, (void*)0, 0);
     char strings[numStrings][128];
-    char(*addr)[128] = strings;
-    addr = (char(*)[128]) shmat(shmid, (void*)0, 0);
     
     while (fgets(strings[i], 128, fp))
     {
@@ -78,9 +77,11 @@ int main(int argc, char* argv[]) {
         i++;
     }
 
-    //for (i = 0; i < numStrings; i++) {
-    //    printf(" %s\n", addr[i]);
-    //}
+    for (i = 0; i < numStrings; i++) {
+        printf("%d%s\n", i, strings[i]);
+    }
+
+    fclose(fp);
 
     pid_t  pid;
     int ret = 1;
@@ -95,9 +96,10 @@ int main(int argc, char* argv[]) {
         printf("child process, pid = %u\n", getpid());
         printf("parent of child process, pid = %u\n", getppid());
 
-        char n[4];
-        sprintf(n, "%d", numStrings);
-        execl("palin", "10", n, (char *) NULL);
+        char num[10], index[10];
+        sprintf(index, "%d", i);
+        sprintf(num, "%d", numStrings);
+        execl("palin", index, num, (char *) NULL);
         exit(0);
     }
     else {
@@ -127,14 +129,14 @@ int main(int argc, char* argv[]) {
     }
 
 
-    if (shmdt(addr) == -1) {
-        perror("shmdt");
-        return -1;
-    }
-    if (shmctl(shmid, IPC_RMID, 0) == -1) {
-        perror("shmctl");
-        return -1;
-    }
+    //if (shmdt(addr) == -1) {
+    //    perror("shmdt");
+    //    return -1;
+    //}
+    //if (shmctl(shmid, IPC_RMID, 0) == -1) {
+    //    perror("shmctl");
+    //    return -1;
+    //}
 
     return 0;
 }
