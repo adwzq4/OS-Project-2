@@ -14,6 +14,8 @@
 
 int nMax, sMax;
 
+enum state { idle, want_in, in_cs };
+
 static void interruptHandler(int s) {
     signal(SIGQUIT, SIG_IGN);
     kill(-getpid(), SIGQUIT);
@@ -114,23 +116,35 @@ int main(int argc, char* argv[]) {
     } 
     rewind(fp);
     
+    struct shmseg {
+        int turn;
+        enum state flag[20];
+        char strings[numStrings][128];
+    };
+
     key_t key = ftok("master", 137);
-    int shmid = shmget(key, numStrings * 128, 0666 | IPC_CREAT);
+    int shmid = shmget(key, sizeof(struct shmseg), 0666 | IPC_CREAT);
     if (shmid == -1) {
         perror("Shared memory");
         return 1;
     }
-    //fprintf(stderr, "Value of errno: %d\n", errno); printf("%lu", shmid);
-    
-    char(*strings)[numStrings][128] = shmat(shmid, (void*)0, 0);
-    if (strings == (void*)-1) {
+
+    struct shmseg* shmptr = shmat(shmid, (void*)0, 0);
+    if (shmptr == (void*)-1) {
         perror("Shared memory attach");
         return 1;
     }
+
+    shmptr->turn = 0;
+    for (i = 0; i < 20; i++) {
+        shmptr->flag[i] = idle;
+    }
     
+
     // reads input file, string-by-string, into shared memory, adding null terminator to each
-    while (fgets((*strings)[i], 128, fp)) {
-        (*strings)[i][strlen((*strings)[i]) - 1] = '\0';
+    i = 0;
+    while (fgets(shmptr->strings[i], 128, fp)) {
+        shmptr->strings[i][strlen(shmptr->strings[i]) - 1] = '\0';
         i++;
     }
     fclose(fp);
@@ -176,7 +190,7 @@ int main(int argc, char* argv[]) {
     }
 
     // detaches strings array from shared memory, then destroys shared memory segment
-    if (shmdt(strings) == -1) {
+    if (shmdt(shmptr) == -1) {
         perror("shmdt");
         return -1;
     }
