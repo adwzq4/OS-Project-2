@@ -11,27 +11,28 @@
 #include <sys/ipc.h> 
 #include <sys/shm.h> 
 
+// declare state possibilities
 enum state { idle, want_in, in_cs };
 
 void criticalSection(char*, int, int);
 
-//void sigquit_handler(int sig) {
-//    write(0, "killed\n", 10);
-//    exit(0);
-//}
-
 int main(int argc, char* argv[]) {
     int i, j;
-    //signal(SIGQUIT, sigquit_handler);
+    
+    // read execl args into local variables
     i = atoi(argv[0]);
     int numStrings = atoi(argv[1]);
 
+    // shared memory segment contains 2d string array and variables to control 
+    // critical section
     struct shmseg {
         int turn;
         enum state flag[20];
         char strings[numStrings][128];
     };
 
+
+    // get same shmid as in master
     key_t key = ftok("master", 137);
     int shmid = shmget(key, sizeof(struct shmseg), 0666 | IPC_CREAT);
     if (shmid == -1) {
@@ -39,18 +40,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // attach struct pointer to shared memory segment
     struct shmseg * shmptr  = shmat(shmid, (void*)0, 0);
     if (shmptr == (void*)-1) {
         perror("Shared memory attach");
         return 1;
     }
-    printf("%d", i);
+
+    // puts strings[i] into a local variable for easier handling
     char* str = shmptr->strings[i];
     
+    // sets pFlag to true if str is a palindrome and false if not
     int pFlag = 1;
     int left = 0;
     int right = strlen(str) - 1;
-
     while (right > left) {
         if (str[left++] != str[right--]) {
             pFlag = 0;
@@ -58,6 +61,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // makes sure only one process can enter its critical section at a time
     do
     {
         shmptr->flag[i] = want_in; // Raise my flag
@@ -82,6 +86,7 @@ int main(int argc, char* argv[]) {
     shmptr->turn = j;
     shmptr->flag[i] = idle;
 
+    // detach from shared memory
     if (shmdt(shmptr) == -1) {
         perror("shmdt");
         return 1;
@@ -90,22 +95,25 @@ int main(int argc, char* argv[]) {
 	return 0;
 }  
 
+// handles the process's critical section
 void criticalSection(char* str, int pFlag, int index) {
-    struct timeval stop, start;
+    struct timeval start;
     struct timespec wait;
     FILE* fp;
     FILE* fp2;
 
+    // seed random number generator
     gettimeofday(&start, NULL);
     srand((unsigned int)start.tv_usec);
 
+    // get random wait from 0-2 seconds, with nanosecond precision,
+    // then sleep for that amount of time
     long r = (rand() % 2000) * 1000000;
     wait.tv_sec = r / 1000000000;
     wait.tv_nsec = r % 1000000000;
-
     nanosleep(&wait, NULL);
-    //printf("%s %.3f\n", str, r / 1000000000.);
 
+    // print process id, array index, and string to log file
     fp2 = fopen("output.log", "a");
     if (fp2 == NULL) {
         perror("Error opening file.");
@@ -113,6 +121,7 @@ void criticalSection(char* str, int pFlag, int index) {
     fprintf(fp2, "%u   %d   %s\n", getpid(), index, str);
     fclose(fp2);
 
+    // print string to palin.out if it is a palindrome
     if (pFlag == 1) {
         fp = fopen("palin.out", "a");
         if (fp == NULL) {
@@ -121,6 +130,7 @@ void criticalSection(char* str, int pFlag, int index) {
         fprintf(fp, "%s\n", str);
     }
 
+    // print string to nopalin.out if it is not a palindrome
     else {
         fp = fopen("nopalin.out", "a");
         if (fp == NULL) {
