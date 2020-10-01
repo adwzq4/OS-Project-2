@@ -12,17 +12,22 @@
 #include <sys/ipc.h> 
 #include <sys/shm.h> 
 
-int nMax, sMax;
+// nMax is global so interrupt handler can affect it
+int nMax;
 
+// declares possible flag states
 enum state { idle, want_in, in_cs };
 
+// kills all processes in this process group, which is ignored by master,
+// then zeros out nMax so no new processes are spawned
 static void interruptHandler(int s) {
     signal(SIGQUIT, SIG_IGN);
     kill(-getpid(), SIGQUIT);
-    nMax = sMax = 0;
+    nMax = 0;
 }
 
-static int setupinterrupt(void) {
+// sets up sigaction for SIGALRM
+static int setupAlarmInterrupt(void) {
     struct sigaction sigAlrmAct;
     sigAlrmAct.sa_handler = interruptHandler;
     sigAlrmAct.sa_flags = 0;
@@ -30,50 +35,56 @@ static int setupinterrupt(void) {
     return (sigaction(SIGALRM, &sigAlrmAct, NULL));
 }
 
+// sets up sigaction for SIGINT, using same handler as SIGALRM to avoid conflict
+static int setupSIGINT(void) {
+    struct sigaction sigIntAct;
+    sigIntAct.sa_handler = interruptHandler;
+    sigIntAct.sa_flags = 0;
+    sigemptyset(&sigIntAct.sa_mask);
+    return (sigaction(SIGINT, &sigIntAct, NULL));
+}
+
+// sets ups itimer with value of tMax and interval of 0
 static int setupitimer(int t) {
     struct itimerval value = { {0, 0}, {t, 0} };
     return (setitimer(ITIMER_REAL, &value, NULL));
 }
 
+// reads an input file of strings into shared memory, then spawns up to nMax child processes, sMax at a time,
+// by fork-execing the palin executable to process each of those strings; then adds final time to logfile; stops
+// execution if tMax is reached; ensures there are no shared memory leaks or zombie processes
 int main(int argc, char* argv[]) {
-    int opt, tMax, status;
-    int numStrings = 0, i = 0, currentProcesses = 0;
+    int i, opt, tMax, sMax, status;
+    int numStrings = 0, currentProcesses = 0;
+    char c;
+    pid_t  pid;
+    key_t key;
+    struct timeval current, start;
     FILE* fp;
     FILE* fp2;
-    char c;
-    struct timeval current, start;
-    struct sigaction sigIntAct;
 
-    nMax = 10; //TODO set to 4
+    // set default parameters
+    nMax = 4;
     sMax = 2;
     tMax = 100;
     gettimeofday(&start, NULL);
-
-    sigIntAct.sa_handler = interruptHandler;
-    sigIntAct.sa_flags = 0;
-    sigemptyset(&sigIntAct.sa_mask);
-
-    if (sigaction(SIGINT, &sigIntAct, NULL) == -1) {
-        perror("sigaction");
-        exit(1);
-    }
 
     // parses command line arguments
     while ((opt = getopt(argc, argv, "hn:s:t:")) != -1) {
         switch (opt) {
             case 'h':
-                printf("\n\n\n--- palin Help Page ---\n\n\
-                    palin reads a file of strings, and for each string creates a child process to determine\n\
-                    whether the string is a palindrom, then writes all palindromes to one palin.out, and all\n\
+                printf("\n\n\n--- master/palin Help Page ---\n\n\
+                    master reads a file of strings, and for each string creates a child process (palin) to determine\n\
+                    whether the string is a palindrome; all palindromes are written to palin.out, and all\n\
                     non-palindromes to nopalin.out\n\n\
                       Invocation:\nmaster -h\nmaster [-n x] [-s x] [-t time] infile\n  Options:\n\
-                    -h Describe how the project should be run and then, terminate.\n\
-                    -n x Indicate the maximum total of child processes master will ever create. (Default 4, Maximum 20)\n\
-                    -s x Indicate the number of children allowed to exist in the system at the same time. (Default 2)\n\
-                    -t time The time in seconds after which the process will terminate, even if it has not finished. (Default 100)\n\
+                    -h Opens master/palin Help Page.\n\
+                    -n x Sets the maximum total number of child processes master will ever create. (Default 4, Maximum 20)\n\
+                    -s x Sets the number of children allowed to exist in the system at the same time. (Default 2)\n\
+                    -t time Sets the time in seconds after which the process will terminate, even if it has not finished. (Default 100)\n\
                     infile Input file containing strings to be tested.");
                 return 0;
-            // nMax equals the arg after -n, unless it is gt 20, then nMax = 20 
+            // nMax equals the arg after -n, or 20 if the arg is greater than 20
             case 'n':
                 nMax = (atoi(optarg) < 20) ? atoi(optarg) : 20;
                 break;
@@ -90,23 +101,27 @@ int main(int argc, char* argv[]) {
     if (optind = argc - 1) {
         fp = fopen(argv[optind], "r");
         if (fp == NULL) {
-            printf("Unable to find that file.\n");
-            return -1;
+            perror("master: Unable to find that file.");
+            exit(-1);
         }
     }
     else {
-        printf("Wrong number of command line arguments.\n");
-        return -1;
+        perror("master: Wrong number of command line arguments.");
+        exit(-1);
     }
 
-    // sets up timer and timer interrupt
+    // sets up timer, and SIGALRM and SIGINT handlers
     if (setupitimer(tMax) == -1) {
-        perror("Failed to set up the ITIMER_REAL countdown timer");
-        return 1;
+        perror("master: Failed to set up the ITIMER_REAL countdown timer");
+        exit(-1);
     }
-    if (setupinterrupt() == -1) {
-        perror("Failed to set up handler for SIGPROF");
-        return 1;
+    if (setupAlarmInterrupt() == -1) {
+        perror("master: Failed to set up handler for SIGALRM");
+        exit(-1);
+    }
+    if (setupSIGINT() == -1) {
+        perror("master: Failed to set up handler for SIGINT");
+        exit(-1);
     }
 
     // gets number of strings in input file by counting number of newlines, then rewinds filepointer
@@ -116,30 +131,37 @@ int main(int argc, char* argv[]) {
     } 
     rewind(fp);
     
+    // shared memory segment struct contains 2d string array, variables to control 
+    // critical section, and original start time
     struct shmseg {
         int turn;
         enum state flag[20];
         char strings[numStrings][128];
+        struct timeval startTime;
     };
 
-    key_t key = ftok("master", 137);
+    // create shared memory segment the same size as struct shmseg and get its shmid
+    key = ftok("master", 137);
     int shmid = shmget(key, sizeof(struct shmseg), 0666 | IPC_CREAT);
     if (shmid == -1) {
-        perror("Shared memory");
-        return 1;
+        perror("master: Shared memory");
+        exit(-1);
     }
 
+    // attach struct pointer to shared memory segment
     struct shmseg* shmptr = shmat(shmid, (void*)0, 0);
     if (shmptr == (void*)-1) {
-        perror("Shared memory attach");
-        return 1;
+        perror("master: Shared memory attach");
+        exit(-1);
     }
 
+    // initialize turn to 0 and all flags to idle
     shmptr->turn = 0;
     for (i = 0; i < 20; i++) {
         shmptr->flag[i] = idle;
     }
     
+    shmptr->startTime = start;
 
     // reads input file, string-by-string, into shared memory, adding null terminator to each
     i = 0;
@@ -149,19 +171,17 @@ int main(int argc, char* argv[]) {
     }
     fclose(fp);
 
-    pid_t  pid;
+    // forks child processes until either numStrings or nMax is reached
     for (i = 0; i < numStrings && i < nMax; i++) {
-        while (currentProcesses >= sMax) {
-            wait(&status);
-            currentProcesses--;
-        }
-
         pid = fork();
         currentProcesses++;
 
         if (pid == -1) {
-            perror("Can't Fork");
+            perror("master: Can't Fork");
         }
+
+        // in forked child, converts i and numStrings to char arrays so they can be used as 
+        // args in execl() call to palin executable
         else if (pid == 0) {
             char num[10], index[10];
             sprintf(index, "%d", i);
@@ -169,39 +189,46 @@ int main(int argc, char* argv[]) {
             execl("palin", index, num, (char*)NULL);
             exit(0);
         }
+
+        // in parent process, waits for exit signals until the number of active child processes is below sMax
         else {
             while (currentProcesses >= sMax) {
                 if (wait(&status) > 0) {
-                    if (WIFEXITED(status) && !WEXITSTATUS(status)) ;// printf("program execution successful\n");
+                    if (WIFEXITED(status) && !WEXITSTATUS(status)) ;
                     else if (WIFEXITED(status) && WEXITSTATUS(status)) {
-                        if (WEXITSTATUS(status) == 127) perror("execl failed");
-                        else perror("program terminated normally, but returned a non-zero status");
+                        if (WEXITSTATUS(status) == 127) perror("master: execl failed");
+                        else perror("master: program terminated normally, but returned a non-zero status");
                     }
-                    else perror("program didn't terminate normally");
+                    else perror("master: program didn't terminate normally");
                 }
                 currentProcesses--;
             }
         }
     }
 
-    // waits for exit code from all remaining child processes
+    // waits for exit code from all remaining children
     for (i = 0; i < currentProcesses; i++) {
         wait(&status);
     }
 
     // detaches strings array from shared memory, then destroys shared memory segment
     if (shmdt(shmptr) == -1) {
-        perror("shmdt");
-        return -1;
+        perror("master: detach shared memory error");
+        exit(-1);
     }
     if (shmctl(shmid, IPC_RMID, 0) == -1) {
-        perror("shmctl");
-        return -1;
+        perror("master: destroy shared memory error");
+        exit(-1);
     }
 
+    // appends final time to logfile
     fp2 = fopen("output.log", "a");
+    if (fp2 == NULL) {
+        perror("master: unable to open output.log");
+        exit(-1);
+    }
     gettimeofday(&current, NULL);
-    fprintf(fp2, "final time: %.5f s\n", ((current.tv_sec - start.tv_sec) * 1000000 + current.tv_usec - start.tv_usec) / 1000000.);
+    fprintf(fp2, "\n\tFinal time: %.5f s\n\n", ((current.tv_sec - start.tv_sec) * 1000000 + current.tv_usec - start.tv_usec) / 1000000.);
     fclose(fp2);
 
     return 0;
