@@ -24,6 +24,11 @@ master [-n x] [-s x] [-t time] file
 
 
 
+Version Control
+	Git was used for version control. A full change log can be found at https://github.com/adwzq4/OS-Project-2/commits/master
+
+
+
 MIT License
 
 Copyright (c) 2020 Adam Wilson

@@ -67,6 +67,8 @@ int main(int argc, char* argv[]) {
     nMax = 4;
     sMax = 2;
     tMax = 100;
+
+    // initialize start time
     gettimeofday(&start, NULL);
 
     // parses command line arguments
@@ -101,26 +103,26 @@ int main(int argc, char* argv[]) {
     if (optind = argc - 1) {
         fp = fopen(argv[optind], "r");
         if (fp == NULL) {
-            perror("master: Unable to find that file.");
+            perror("master: Error");
             exit(-1);
         }
     }
     else {
-        perror("master: Wrong number of command line arguments.");
+        fprintf(stderr, "master: Error: wrong number of command line arguments");
         exit(-1);
     }
 
     // sets up timer, and SIGALRM and SIGINT handlers
     if (setupitimer(tMax) == -1) {
-        perror("master: Failed to set up the ITIMER_REAL countdown timer");
+        perror("master: Error");
         exit(-1);
     }
     if (setupAlarmInterrupt() == -1) {
-        perror("master: Failed to set up handler for SIGALRM");
+        perror("master: Error");
         exit(-1);
     }
     if (setupSIGINT() == -1) {
-        perror("master: Failed to set up handler for SIGINT");
+        perror("master: Error");
         exit(-1);
     }
 
@@ -144,14 +146,14 @@ int main(int argc, char* argv[]) {
     key = ftok("master", 137);
     int shmid = shmget(key, sizeof(struct shmseg), 0666 | IPC_CREAT);
     if (shmid == -1) {
-        perror("master: Shared memory");
+        perror("master: Error");
         exit(-1);
     }
 
     // attach struct pointer to shared memory segment
     struct shmseg* shmptr = shmat(shmid, (void*)0, 0);
     if (shmptr == (void*)-1) {
-        perror("master: Shared memory attach");
+        perror("master: Error");
         exit(-1);
     }
 
@@ -163,7 +165,7 @@ int main(int argc, char* argv[]) {
     
     shmptr->startTime = start;
 
-    // reads input file, string-by-string, into shared memory, adding null terminator to each
+    // reads input file, string-by-string, into shared memory, adding null terminator to each string
     i = 0;
     while (fgets(shmptr->strings[i], 128, fp)) {
         shmptr->strings[i][strlen(shmptr->strings[i]) - 1] = '\0';
@@ -171,13 +173,13 @@ int main(int argc, char* argv[]) {
     }
     fclose(fp);
 
-    // forks child processes until either numStrings or nMax is reached
+    // forks child processes until the cumulative total reaches either numStrings or nMax
     for (i = 0; i < numStrings && i < nMax; i++) {
         pid = fork();
         currentProcesses++;
 
         if (pid == -1) {
-            perror("master: Can't Fork");
+            perror("master: Error");
         }
 
         // in forked child, converts i and numStrings to char arrays so they can be used as 
@@ -196,10 +198,10 @@ int main(int argc, char* argv[]) {
                 if (wait(&status) > 0) {
                     if (WIFEXITED(status) && !WEXITSTATUS(status)) ;
                     else if (WIFEXITED(status) && WEXITSTATUS(status)) {
-                        if (WEXITSTATUS(status) == 127) perror("master: execl failed");
-                        else perror("master: program terminated normally, but returned a non-zero status");
+                        if (WEXITSTATUS(status) == 127) perror("master: Error");
+                        else perror("master: Error");
                     }
-                    else perror("master: program didn't terminate normally");
+                    else perror("master: Error");
                 }
                 currentProcesses--;
             }
@@ -208,27 +210,34 @@ int main(int argc, char* argv[]) {
 
     // waits for exit code from all remaining children
     for (i = 0; i < currentProcesses; i++) {
-        wait(&status);
+        if (wait(&status) > 0) {
+            if (WIFEXITED(status) && !WEXITSTATUS(status));
+            else if (WIFEXITED(status) && WEXITSTATUS(status)) {
+                if (WEXITSTATUS(status) == 127) perror("master: Error");
+                else perror("master: Error");
+            }
+            else perror("master: Error");
+        }
     }
 
     // detaches strings array from shared memory, then destroys shared memory segment
     if (shmdt(shmptr) == -1) {
-        perror("master: detach shared memory error");
+        perror("master: Error");
         exit(-1);
     }
     if (shmctl(shmid, IPC_RMID, 0) == -1) {
-        perror("master: destroy shared memory error");
+        perror("master: Error");
         exit(-1);
     }
 
     // appends final time to logfile
     fp2 = fopen("output.log", "a");
     if (fp2 == NULL) {
-        perror("master: unable to open output.log");
+        perror("master: Error");
         exit(-1);
     }
     gettimeofday(&current, NULL);
-    fprintf(fp2, "\n\tFinal time: %.5f s\n\n", ((current.tv_sec - start.tv_sec) * 1000000 + current.tv_usec - start.tv_usec) / 1000000.);
+    fprintf(fp2, "\nFinal time: %.5f s\n\n", ((current.tv_sec - start.tv_sec) * 1000000 + current.tv_usec - start.tv_usec) / 1000000.);
     fclose(fp2);
 
     return 0;

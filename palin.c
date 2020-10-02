@@ -17,8 +17,8 @@ enum state { idle, want_in, in_cs };
 void criticalSection(char*, int, int);
 
 // child process determines whether or not string assigned to it is a palindrome,
-// then writes the string to a corresponding output file while ensuring the critical 
-// section problem is solved and outputting event times
+// then writes the string to a corresponding output file while protecting the critical 
+// section and outputting timings relating to the critical sections
 int main(int argc, char* argv[]) {
     int i, j;
     struct timeval current;
@@ -40,15 +40,15 @@ int main(int argc, char* argv[]) {
     key_t key = ftok("master", 137);
     int shmid = shmget(key, sizeof(struct shmseg), 0666 | IPC_CREAT);
     if (shmid == -1) {
-        perror("palin: Shared memory error");
-        return 1;
+        perror("palin: Error");
+        exit(-1);
     }
 
     // attach struct pointer to shared memory segment
     struct shmseg * shmptr  = shmat(shmid, (void*)0, 0);
     if (shmptr == (void*)-1) {
-        perror("palin: Shared memory attach error");
-        return 1;
+        perror("palin: Error");
+        exit(-1);
     }
 
     // puts strings[i] into a local variable for easier handling
@@ -70,7 +70,8 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "Process %u began trying to enter critical section at %ul ns\n", getpid(),
         (current.tv_sec - shmptr->start.tv_sec) * 1000000 + current.tv_usec - shmptr->start.tv_usec);
     
-    // makes sure only one process can enter its critical section at a time
+    // makes sure only one process can enter its critical section at a time; ensures progress
+    // and bounded wait
     do
     {
         // raise this process's flag
@@ -117,8 +118,8 @@ int main(int argc, char* argv[]) {
 
     // detach from shared memory
     if (shmdt(shmptr) == -1) {
-        perror("palin: shared memory detach error");
-        return 1;
+        perror("palin: Error");
+        exit(-1);
     }
 
 	return 0;
@@ -133,7 +134,7 @@ void criticalSection(char* str, int pFlag, int index) {
     // append process id, array index, and string to log file
     fp2 = fopen("output.log", "a");
     if (fp2 == NULL) {
-        perror("palin: Error opening file");
+        perror("palin: Error");
     }
     fprintf(fp2, "%u   %d   %s\n", getpid(), index, str);
     fclose(fp2);
@@ -142,7 +143,7 @@ void criticalSection(char* str, int pFlag, int index) {
     if (pFlag == 1) {
         fp = fopen("palin.out", "a");
         if (fp == NULL) {
-            perror("palin: Error opening file");
+            perror("palin: Error");
         }
         fprintf(fp, "%s\n", str);
     }
@@ -151,7 +152,7 @@ void criticalSection(char* str, int pFlag, int index) {
     else {
         fp = fopen("nopalin.out", "a");
         if (fp == NULL) {
-            perror("palin: Error opening file");
+            perror("palin: Error");
         }
         fprintf(fp, "%s\n", str);
     }
